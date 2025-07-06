@@ -1,0 +1,16 @@
+{% extends 'base.html' %}{% block title %}Historie{% endblock %}
+{% block nav_extra %}<a class="btn btn-sm btn-danger ms-3" href="{{ url_for('clear_history') }}">Leere Historie</a>{% endblock %}
+{% block content %}
+<h1>Historie</h1>
+<h2>Operationen</h2>
+<table class="table table-striped"><thead><tr><th>ID</th><th>Gerät</th><th>Aktion</th><th>Status</th><th>Fortschritt</th><th>Zeit</th></tr></thead><tbody>
+{% for o in ops %}<tr>
+  <td>{{ o.id }}</td><td>{{ o.device }}</td><td>{{ o.action }}</td><td>{{ o.status }}</td>
+  <td>{{ o.progress }}%</td><td>{{ o.ts }}</td>
+</tr>{% endfor %}
+</tbody></table>
+<h2 class="mt-4">SMART-Verlauf</h2>
+<table class="table table-striped"><thead><tr><th>ID</th><th>Gerät</th><th>Temp</th><th>Health</th><th>Zeit</th></tr></thead><tbody>
+{% for s in smart %}<tr><td>{{ s.id }}</td><td>{{ s.device }}</td><td>{{ s.temp }}</td><td>{{ s.health }}</td><td>{{ s.ts }}</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}
