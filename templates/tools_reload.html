@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}Reloaded{% endblock %}
+{% block content %}
+  <h1>Reload für /dev/{{ device }}</h1>
+  <p>Datei erstellt: {{ path }}</p>
+  <a href="{{ url_for('index') }}" class="btn btn-primary">Zurück zur Übersicht</a>
+{% endblock %}

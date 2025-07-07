@@ -1,0 +1,20 @@
+{% extends 'base.html' %}{% block title %}Übersicht{% endblock %}
+{% block nav_extra %}<a class="btn btn-sm btn-secondary ms-3" href="{{ url_for('toggle_auto') }}">Auto: {{ 'AN' if auto else 'AUS' }}</a>{% endblock %}
+{% block content %}
+<h1>Festplattenübersicht</h1>
+        <a href="/pluginmanager/" class="btn btn-sm btn-outline-dark float-end">🧩 Plugin Manager</a>
+<form method="get" class="row mb-4">
+  <div class="col-md-4"><input name="q" class="form-control" placeholder="Suche Gerät/Modell" value="{{ request.args.get('q','') }}"></div>
+  <div class="col-auto"><button class="btn btn-primary">Suchen</button> <a href="{{ url_for('index') }}" class="btn btn-secondary">Reset</a></div>
+</form>
+<table class="table table-hover table-striped"><thead class="table-dark"><tr><th>Gerät</th><th>Modell</th><th>Größe</th><th>Aktionen</th></tr></thead><tbody>
+{% for d in disks %}
+<tr><td>{{ d.device }}</td><td>{{ d.model }}</td><td>{{ d.size }}</td><td>
+  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('smart_start_route', device=d.device, mode='short') }}">SMART</a>
+  <a class="btn btn-sm btn-info" href="{{ url_for('smart_view_route', device=d.device) }}">Anzeigen</a>
+  <a class="btn btn-sm btn-warning" href="{{ url_for('validate_route', device=d.device) }}">Validieren</a>
+  <a class="btn btn-sm btn-danger" href="{{ url_for('format_route', device=d.device) }}">Formatieren</a>
+  {{ hook("device_buttons", d.device)|safe }}
+</td></tr>{% endfor %}</tbody></table>
+<div><a href="{{ url_for('history') }}" class="btn btn-secondary">Historie</a> <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Dashboard</a> <a href="{{ url_for('export_smart') }}" class="btn btn-secondary">Export SMART</a> <a href="{{ url_for('import_smart') }}" class="btn btn-secondary">Import SMART</a></div>
+{% endblock %}

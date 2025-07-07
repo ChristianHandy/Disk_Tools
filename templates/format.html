@@ -1,0 +1,14 @@
+{% extends 'base.html' %}{% block title %}Formatieren{% endblock %}
+{% block content %}
+<h1>/dev/{{ device }} formatieren</h1>
+<form method="post" class="row g-3">
+  <div class="col-auto">
+    <select name="fs" class="form-select">
+      <option value="ext4">ext4</option>
+      <option value="xfs">xfs</option>
+      <option value="fat32">fat32</option>
+    </select>
+  </div>
+  <div class="col-auto"><button class="btn btn-danger">Start</button></div>
+</form>
+{% endblock %}

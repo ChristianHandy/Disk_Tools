@@ -1,0 +1,8 @@
+{% extends 'base.html' %}{% block title %}Validate{% endblock %}
+{% block content %}
+<h2>Blockprüfung für {{ device }}</h2>
+<div>{% for b in blocks %}
+  <span class="block {% if b in bad_blocks %}bad{% else %}good{% endif %}"></span>
+  {% if loop.index % 50 == 0 %}<br>{% endif %}
+{% endfor %}</div>
+{% endblock %}

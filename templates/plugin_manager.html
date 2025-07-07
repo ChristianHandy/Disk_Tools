@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}Plugin Manager{% endblock %}
+{% block content %}
+<div class="container mt-4">
+  <h1 class="mb-4">Plugin Manager</h1>
+  <table class="table table-hover table-bordered align-middle">
+    <thead class="table-dark">
+      <tr>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Fehler</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in plugins %}
+      <tr class="{{ 'table-success' if p.status == 'ok' else 'table-danger' }}">
+        <td>{{ p.name }}</td>
+        <td><strong>{{ '✅ OK' if p.status == 'ok' else '❌ Fehler' }}</strong></td>
+        <td>
+          {% if p.error %}
+          <pre class="bg-dark text-light p-2 rounded" style="white-space: pre-wrap;">{{ p.error }}</pre>
+          {% else %}
+          <span class="text-muted">–</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <a href="{{ url_for('index') }}" class="btn btn-secondary">Zurück</a>
+</div>
+{% endblock %}
