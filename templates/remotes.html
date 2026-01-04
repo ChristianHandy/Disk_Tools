@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Remotes</title>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Remotes</h2>
+      <form method="post" action="{{ url_for('remotes') }}">
+        <div>
+          <label>Name</label>
+          <input name="name" />
+        </div>
+        <div>
+          <label>Host</label>
+          <input name="host" />
+        </div>
+        <div>
+          <label>Port</label>
+          <input name="port" value="22" />
+        </div>
+        <button type="submit">Add Remote</button>
+      </form>
+
+      <ul>
+      {% for r in remotes %}
+        <li>{{ r['id'] }} - {{ r['name'] }} ({{ r['host'] }}:{{ r['port'] }}) - <a href="{{ url_for('remotes_delete', rid=r['id']) }}">delete</a></li>
+      {% endfor %}
+      </ul>
+    </div>
+  </body>
+</html>

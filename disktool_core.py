@@ -43,22 +43,40 @@ def init_db():
           health TEXT,
           ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS remotes(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          host TEXT,
+          port INTEGER DEFAULT 22,
+          enabled INTEGER DEFAULT 1,
+          added_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         # falls später Spalten hinzugefügt wurden:
         cols = {c[1] for c in db.execute("PRAGMA table_info(disks)")}
         if 'serial' not in cols:
-            db.execute("ALTER TABLE disks ADD COLUMN serial TEXT")
+            try:
+                db.execute("ALTER TABLE disks ADD COLUMN serial TEXT")
+            except Exception:
+                pass
 
 def run(cmd):
     """Führt einen Shell-Befehl aus und gibt den gesamten Output zurück."""
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    return res.stdout
+    # cmd is a list
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return res.stdout
+    except Exception as e:
+        return str(e)
 
 # --- Festplatten-Funktionen ---
 def ls_disks():
     """Liest alle physischen Disks mit lsblk aus und gibt eine Liste von Devices zurück."""
     output = run(['lsblk', '-J', '-d', '-o', 'NAME,SIZE,MODEL,TYPE'])
-    data = json.loads(output)
+    try:
+        data = json.loads(output)
+    except Exception:
+        return []
     # Nur 'disk'-Geräte betrachten
     return [d for d in data.get('blockdevices', []) if d.get('type') == 'disk']
 
@@ -78,7 +96,8 @@ def sync_disks():
        Setzt 'present' für alle alten Geräte auf 0 und fügt neue ein.
        Startet bei Auto-Modus ggf. automatische Aufgaben (Format, SMART)."""
     global auto_enabled
-    now = datetime.utcnow().isoformat()
+    # Use SQLite-compatible timestamp format for comparison
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     new_devices = []
     with get_db() as db:
         db.execute('UPDATE disks SET present = 0')
@@ -88,7 +107,7 @@ def sync_disks():
                 '''INSERT OR REPLACE INTO disks(device, serial, model, size, present, first_seen)
                    VALUES (?, ?, ?, ?, 1,
                            COALESCE((SELECT first_seen FROM disks WHERE device=?), CURRENT_TIMESTAMP))''',
-                (d['name'], serial, d['model'], d['size'], d['name'])
+                (d['name'], serial, d.get('model'), d.get('size'), d['name'])
             )
         # Finde neu hinzugekommene Devices (first_seen >= now)
         rows = db.execute('SELECT device FROM disks WHERE first_seen >= ?', (now,)).fetchall()
@@ -132,6 +151,8 @@ def format_worker(device, fs, op_id):
     try:
         run(['wipefs', '-a', path])
         cmd_map = {'ext4': ['mkfs.ext4', '-F'], 'xfs': ['mkfs.xfs', '-f'], 'fat32': ['mkfs.vfat', '-F', '32']}
+        if fs not in cmd_map:
+            raise ValueError('Unknown fs')
         run(cmd_map[fs] + [path])
         update_op(op_id, status='OK', progress=100)
     except Exception:
@@ -160,29 +181,90 @@ def view_smart(device):
     return out
 
 def validate_blocks(device):
-    """Prüft die ersten Blöcke eines Geräts mit badblocks und markiert fehlerhafte Blöcke."""
-    size = int(run(['blockdev', '--getsize64', f'/dev/{device}']).strip())
-    count = size // 4096
-    blocks = list(range(min(count, 256)))
+    """Prüft die ersten Blöcke eines Geräts mit direkten Leseversuchen und markiert fehlerhafte Blöcke."""
+    # Versuche, die ersten N Blöcke (z.B. 256) zu lesen und sammle fehlerhafte Indices
+    max_blocks = 256
     bad_blocks = []
+    blocks = []
+    # Bestimme Gerätgröße in Bytes
+    try:
+        size_out = run(['blockdev', '--getsize64', f'/dev/{device}']).strip()
+        size = int(size_out)
+    except Exception:
+        size = None
+    if size:
+        count = size // 4096
+        blocks = list(range(min(count, max_blocks)))
+    else:
+        blocks = list(range(max_blocks))
+
     for b in blocks:
+        # Lese einen Block an Position b (offset = b*4096) mittels dd with count=1
+        offset = b * 4096
         try:
-            run(['badblocks', '-b', '4096', '-o', str(b), f'/dev/{device}'])
+            # dd will return non-zero on read errors; capture output
+            res = subprocess.run(['dd', 'if=' + f'/dev/{device}', 'bs=4096', 'count=1', 'skip=' + str(b)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode != 0:
+                bad_blocks.append(b)
         except Exception:
             bad_blocks.append(b)
     return blocks, bad_blocks
 
 # --- Hilfsfunktionen für UI/DB-Abfragen (für Flask-Routen) ---
+def _parse_df_usage():
+    """Parst `df -h` und versucht, Usage-Prozent pro /dev/<name> zurückzugeben."""
+    out = run(['df', '-h'])
+    usage = {}
+    try:
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            dev = parts[0]
+            perc = parts[4]
+            # nur /dev/... Einträge
+            if dev.startswith('/dev/'):
+                # extrahiere Geräteshortname, z.B. /dev/sda1 -> sda
+                name = os.path.basename(dev)
+                # strip partition numbers for simple match: sda1 -> sda
+                m = re.match(r'([a-zA-Z0-9]+)', name)
+                if m:
+                    base = re.match(r'([a-zA-Z]+)', name)
+                    # fallback: use name as key
+                    key = base.group(1) if base else name
+                    usage[key] = perc
+    except Exception:
+        pass
+    return usage
+
+
 def get_disk_list(filter_str=''):
-    """Gibt die Liste der aktuellen Disks aus der DB zurück, optional gefiltert nach Device/Modell."""
+    """Gibt die Liste der aktuellen Disks aus der DB zurück, optional gefiltert nach Device/Modell.
+       Liefert eine Liste von dicts inkl. 'usage' Feld (falls verfügbar)."""
     with get_db() as db:
         if filter_str:
             pattern = f"%{filter_str}%"
-            disks = db.execute("SELECT * FROM disks WHERE present=1 AND (device LIKE ? OR model LIKE ?)",
+            rows = db.execute("SELECT * FROM disks WHERE present=1 AND (device LIKE ? OR model LIKE ?)",
                                (pattern, pattern)).fetchall()
         else:
-            disks = db.execute("SELECT * FROM disks WHERE present=1").fetchall()
+            rows = db.execute("SELECT * FROM disks WHERE present=1").fetchall()
+    usage_map = _parse_df_usage()
+    disks = []
+    for r in rows:
+        d = dict(r)
+        # try to find usage for this device name
+        dev = d.get('device')
+        u = usage_map.get(dev)
+        # if not found, also try stripping numeric suffix
+        if not u:
+            base = re.match(r'([a-zA-Z]+)', dev)
+            if base:
+                u = usage_map.get(base.group(1))
+        d['usage'] = u
+        disks.append(d)
     return disks
+
 
 def fetch_history_data():
     """Liest die Verlaufsdaten (operations und smart_history) aus der Datenbank."""
@@ -191,11 +273,13 @@ def fetch_history_data():
         smart = db.execute("SELECT * FROM smart_history ORDER BY ts DESC").fetchall()
     return ops, smart
 
+
 def clear_history():
     """Löscht alle Einträge aus operations- und smart_history-Tabellen."""
     with get_db() as db:
         db.execute("DELETE FROM operations")
         db.execute("DELETE FROM smart_history")
+
 
 def get_dashboard_data():
     """Erstellt eine Zusammenfassung für das Dashboard (Anzahlen, etc.)."""
@@ -203,11 +287,11 @@ def get_dashboard_data():
         total = db.execute("SELECT COUNT(*) FROM disks").fetchone()[0]
         bad = db.execute("SELECT COUNT(*) FROM smart_history WHERE health='BAD'").fetchone()[0]
         running = db.execute("SELECT COUNT(*) FROM operations WHERE status='RUNNING'").fetchone()[0]
-        # Beispiel: Laufzeit pro Gerät (hier als 'n/a' mangels echter Messung)
         runtimes = []
         for row in db.execute("SELECT device, MIN(ts) AS first_ts FROM operations GROUP BY device").fetchall():
             runtimes.append({'device': row['device'], 'runtime': 'n/a'})
     return {'total': total, 'bad': bad, 'running': running, 'runtimes': runtimes}
+
 
 def export_smart_data():
     """Exportiert die SMART-Historie in eine CSV-Datei im uploads/ Ordner und gibt den Dateipfad zurück."""
@@ -219,34 +303,45 @@ def export_smart_data():
             writer.writerow(tuple(row))
     return path
 
+
 def import_smart_data(file_storage, device='UNKNOWN'):
     """Importiert einen SMART-Bericht aus einer hochgeladenen Datei in die smart_history Tabelle."""
-    # Datei speichern
     filename = file_storage.filename or "smart_upload.txt"
     path = UPLOAD_DIR / filename
     file_storage.save(path)
     text = path.read_text()
-    # Werte extrahieren (Temperatur & Health)
     m = re.search(r'Temperature_Celsius.*\s(\d+)', text)
     temp = int(m.group(1)) if m else None
     health = 'BAD' if 'FAILING_NOW' in text else 'GOOD'
-    # In DB eintragen
     with get_db() as db:
         db.execute("INSERT INTO smart_history(device, serial, temp, health) VALUES (?, ?, ?, ?)",
                    (device, None, temp, health))
 
+# --- Remote management helpers ---
+def add_remote(name, host, port=22, enabled=1):
+    with get_db() as db:
+        db.execute("INSERT INTO remotes(name, host, port, enabled) VALUES (?, ?, ?, ?)",
+                   (name, host, port, enabled))
+
+def list_remotes():
+    with get_db() as db:
+        return db.execute("SELECT * FROM remotes ORDER BY added_ts DESC").fetchall()
+
+def remove_remote(remote_id):
+    with get_db() as db:
+        db.execute("DELETE FROM remotes WHERE id=?", (remote_id,))
+
+# Task helpers (existing): get_task_status, get_task_action, stop_task, auto_mode_worker
+
 def get_task_status(op_id):
-    """Liest Status und Fortschritt eines Tasks aus der DB (für API-Ausgabe)."""
-    row = get_db().execute("SELECT status, progress FROM operations WHERE id=?", (op_id,)).fetchone()
+    row = get_db().execute("SELECT status, progress FROM operations WHERE id=?)", (op_id,)).fetchone()
     return (row['status'], row['progress']) if row else (None, None)
 
 def get_task_action(op_id):
-    """Liefert den Aktionstyp eines Tasks (z.B. 'FORMAT_ext4') zur Anzeige."""
     row = get_db().execute("SELECT action FROM operations WHERE id=?", (op_id,)).fetchone()
     return row['action'] if row else None
 
 def stop_task(op_id):
-    """Markiert einen laufenden Task als gestoppt."""
     with get_db() as db:
         db.execute("UPDATE operations SET status='STOPPED' WHERE id=?", (op_id,))
 
